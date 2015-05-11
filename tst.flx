@@ -1,0 +1,115 @@
+union Node =
+    | Nstring of string
+    | Ncall of string * list[Node]
+    | Nblock of list[Node]
+    | Ndelim
+    | Nerror of int * int
+;
+
+stack := #list[Node];
+
+proc push_node(n: Node) = { stack = n + stack; }
+
+gen pop_to_delim() = {
+    res := #list[Node];
+    while true do
+        h := stack.head;
+        stack = stack.tail;
+        match h with
+        | #Ndelim => return res;
+        | x       => res = x + res;
+        endmatch;
+    done
+}
+
+proc push_delim() => push_node Ndelim;
+proc push_string(s: cstring) => push_node $ Nstring s.str;
+proc push_call(t: cstring) => push_node $ Ncall (t.str, #pop_to_delim);
+proc push_block() => push_node $ Nblock #pop_to_delim;
+
+export proc push_delim of () as "push_delim";
+export proc push_string of (cstring) as "push_string";
+export proc push_call of (cstring) as "push_call";
+export proc push_block of () as "push_block";
+
+header pegdef = '''
+namespace flx_peg {
+    struct parse_result {
+        bool result;
+        int lineno, colno;
+    };
+}
+''';
+
+body '''
+#define YY_CTX_LOCAL
+
+#include <stdio.h>
+
+#define YY_CTX_MEMBERS FILE* in; int lineno, colno; FLX_APAR_DECL_ONLY;
+
+#define YY_INPUT(yy, buf, result, max) {\
+    int c = getc(yy->in);\
+    if ((result = c == EOF ?? 0 : 1)) {\
+        *buf = c; if (c == '\\n'){ ++yy->lineno; yy->colno=0; } else ++yy->colno;\
+    } }
+
+#include "parser_impl.hpp"
+
+namespace flx_peg {
+    void call_parser(FLX_APAR_DECL FILE* in, parse_result* pr) {
+        yycontext ctx;
+        memset(static_cast<void*>(&ctx), 0, sizeof(yycontext));
+        ctx.in = in;
+        ctx.lineno = 1;
+        ctx.ptf = ptf;
+        pr->result = yyparse(&ctx);
+        pr->lineno = ctx.lineno, pr->colno = ctx.colno;
+        yyrelease(&ctx);
+    }
+}
+
+''';
+
+type parse_result = "::flx_peg::parse_result" requires pegdef;
+ctor parse_result: unit = "::flx_peg::parse_result()";
+fun succeeded: parse_result -> bool = "$1.result";
+fun lineno: parse_result -> int = "$1.lineno";
+fun colno: parse_result -> int = "$1.colno";
+
+proc call_parser: ifile * &parse_result = "::flx_peg::call_parser(ptf, $1, $2);";
+
+gen parse(ins: ifile): Node = {
+    var res = #parse_result;
+    call_parser(ins, &res);
+    if res.succeeded do
+        rs := stack.head;
+        stack = #list[Node];
+        return rs;
+    else
+        return Nerror(res.lineno, res.colno);
+    done
+}
+
+struct PrettyPrinter { indent: int; };
+ctor PrettyPrinter() => PrettyPrinter(0);
+
+proc pprint(p: &PrettyPrinter, n: Node) = {
+    for i in 1..p*.indent do print " "; done
+    match n with
+    | Nstring s => println $ f"Nstring %S" s;
+    | Ncall (t, args) =>
+        println $ f"Ncall %S:" t;
+        p*.indent = p*.indent+1;
+        for arg in args do pprint(p, arg); done
+        p*.indent = p*.indent - 1;
+    | Nblock blk =>
+        println "Nblock:";
+        p*.indent = p*.indent+1;
+        for subn in blk do pprint(p, subn); done
+        p*.indent = p*.indent - 1;
+    endmatch;
+}
+
+var pp = #PrettyPrinter;
+pprint(&pp, parse stdin);

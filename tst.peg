@@ -1,0 +1,13 @@
+Program <- Delim Stmt+ _ { push_block(yy->ptf); }
+
+Stmt <- _ Call
+
+Call <- 'WRITELN' _ '(' Delim _ String+ _ ')' {
+    push_call(yy->ptf, const_cast<char*>("WRITELN"));
+}
+
+String <- '"' <("\\"? [^"])*> '"' { push_string(yy->ptf, yytext); }
+
+Delim <- &. { push_delim(yy->ptf); }
+
+_ <- [\r\t\n ]*
